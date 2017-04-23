@@ -18,6 +18,7 @@ from unittest import TestCase
 from zipline.assets import Asset
 from zipline.finance.transaction import Transaction
 
+
 class TransactionTestCase(TestCase):
 
     def test_transaction_repr(self):
