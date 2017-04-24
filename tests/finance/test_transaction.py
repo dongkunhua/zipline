@@ -28,6 +28,6 @@ class TransactionTestCase(TestCase):
         txn = Transaction(asset, amount=100, dt=dt, price=10, order_id=0)
 
         expected = "Transaction(sid=Asset(1), dt=2017-01-01 00:00:00," + \
-        " amount=100, price=10)"
+            " amount=100, price=10)"
 
         self.assertEqual(repr(txn), expected)
