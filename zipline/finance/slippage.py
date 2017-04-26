@@ -23,6 +23,7 @@ import numpy as np
 from pandas import isnull
 
 from zipline.assets import Equity, Future
+from zipline.errors import HistoryWindowStartsBeforeData
 from zipline.finance.constants import ROOT_SYMBOL_TO_ETA
 from zipline.finance.transaction import create_transaction
 from zipline.utils.cache import ExpiringCache
@@ -402,14 +403,20 @@ class MarketImpactBase(object):
         try:
             values = self._window_data_cache.get(asset, data.current_session)
         except KeyError:
-            # Add a day because we want 'window_length' complete days,
-            # excluding the current day.
-            volume_history = data.history(
-                asset, 'volume', window_length + 1, '1d',
-            )
-            close_history = data.history(
-                asset, 'close', window_length + 1, '1d',
-            )
+            try:
+                # Add a day because we want 'window_length' complete days,
+                # excluding the current day.
+                volume_history = data.history(
+                    asset, 'volume', window_length + 1, '1d',
+                )
+                close_history = data.history(
+                    asset, 'close', window_length + 1, '1d',
+                )
+            except HistoryWindowStartsBeforeData:
+                # If there is not enough data to do a full history call, return
+                # values as if there was no data.
+                return 0, np.NaN
+
             # Exclude the first value of the percent change array because it is
             # always just NaN.
             close_volatility = close_history[:-1].pct_change()[1:].std(
