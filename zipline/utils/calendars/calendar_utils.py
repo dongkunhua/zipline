@@ -14,6 +14,8 @@ from zipline.utils.calendars.us_futures_calendar import (
     QuantopianUSFuturesCalendar,
 )
 
+from zipline.utils.calendars.exchange_calendar_sh import SHExchangeCalendar
+
 _default_calendar_factories = {
     'NYSE': NYSEExchangeCalendar,
     'CME': CMEExchangeCalendar,
@@ -23,6 +25,7 @@ _default_calendar_factories = {
     'LSE': LSEExchangeCalendar,
     'TSX': TSXExchangeCalendar,
     'us_futures': QuantopianUSFuturesCalendar,
+    'SH': SHExchangeCalendar,
 }
 _default_calendar_aliases = {
     'NASDAQ': 'NYSE',
@@ -32,8 +35,8 @@ _default_calendar_aliases = {
     'NYMEX': 'CME',
     'ICEUS': 'ICE',
     'NYFE': 'ICE',
+    'SHANGHAI': "SH",
 }
-
 
 class TradingCalendarDispatcher(object):
     """

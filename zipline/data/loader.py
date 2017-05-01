@@ -131,9 +131,9 @@ def load_market_data(trading_day=None, trading_days=None, bm_symbol='^GSPC'):
     '1year','2year','3year','5year','7year','10year','20year','30year'
     """
     if trading_day is None:
-        trading_day = get_calendar('NYSE').trading_day
+        trading_day = get_calendar('SH').trading_day
     if trading_days is None:
-        trading_days = get_calendar('NYSE').all_sessions
+        trading_days = get_calendar('SH').all_sessions
 
     first_date = trading_days[0]
     now = pd.Timestamp.utcnow()
@@ -152,7 +152,7 @@ def load_market_data(trading_day=None, trading_days=None, bm_symbol='^GSPC'):
 
     # We'll attempt to download new data if the latest entry in our cache is
     # before this date.
-    last_date = trading_days[trading_days.get_loc(now, method='ffill') - 2]
+    last_date = trading_days[trading_days.get_loc(now, method='ffill') - 1]
 
     br = ensure_benchmark_data(
         bm_symbol,
@@ -163,12 +163,16 @@ def load_market_data(trading_day=None, trading_days=None, bm_symbol='^GSPC'):
         # date so that we can compute returns for the first date.
         trading_day,
     )
-    tc = ensure_treasury_data(
-        bm_symbol,
-        first_date,
-        last_date,
-        now,
-    )
+    # tc = ensure_treasury_data(
+    #     bm_symbol,
+    #     first_date,
+    #     last_date,
+    #     now,
+    # )
+    columns = [u'1month', u'3month', u'6month', u'1year', u'2year', u'3year',
+             u'5year', u'7year', u'10year', u'20year', u'30year']
+    tc = pd.DataFrame(0.025, columns=columns, index=br.index)
+
     benchmark_returns = br[br.index.slice_indexer(first_date, last_date)]
     treasury_curves = tc[tc.index.slice_indexer(first_date, last_date)]
     return benchmark_returns, treasury_curves
@@ -216,7 +220,7 @@ def ensure_benchmark_data(symbol, first_date, last_date, now, trading_day):
             # Don't re-download if we've successfully downloaded and written a
             # file in the last hour.
             last_download_time = last_modified_time(path)
-            if (now - last_download_time) <= ONE_HOUR:
+            if (now - last_download_time) <= 10 * ONE_HOUR:
                 logger.warn(
                     "Refusing to download new benchmark data because a "
                     "download succeeded at %s." % last_download_time
@@ -484,3 +488,33 @@ def load_prices_from_csv_folder(folderpath, identifier_col, tz='UTC'):
         else:
             data = pd.concat([data, raw], axis=1)
     return data
+
+from net.RPCClient import request
+
+def get_data(symbol, start, end):
+    print symbol
+    data = request(
+        "123.56.77.52:10030",
+        "Kline", {
+            "symbol": symbol,
+            "start": start,
+            "end": end
+        }
+    )
+    if end is None:
+        end = pd.Timestamp("today")
+    df = pd.DataFrame(data)
+    df.index.name = "Date"
+    df.index = pd.to_datetime(df.index)
+    return df.ix[(df.index >= start)&(df.index <= end)]
+
+def get_sector(symbol, date=None):
+    symbols = request(
+        "123.56.77.52:10030",
+        "Sector",
+        {
+            "symbol": "000300.SH",
+            # "date": date,
+        }
+    )
+    return symbols

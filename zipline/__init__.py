@@ -59,15 +59,15 @@ def load_ipython_extension(ipython):
 # PERF: Fire a warning if calendars were instantiated during zipline import.
 # Having calendars doesn't break anything per-se, but it makes zipline imports
 # noticeably slower, which becomes particularly noticeable in the Zipline CLI.
-from zipline.utils.calendars.calendar_utils import global_calendar_dispatcher
-if global_calendar_dispatcher._calendars:
-    import warnings
-    warnings.warn(
-        "Found TradingCalendar instances after zipline import.\n"
-        "Zipline startup will be much slower until this is fixed!",
-    )
-    del warnings
-del global_calendar_dispatcher
+# from zipline.utils.calendars.calendar_utils import global_calendar_dispatcher
+# if global_calendar_dispatcher._calendars:
+#     import warnings
+#     warnings.warn(
+#         "Found TradingCalendar instances after zipline import.\n"
+#         "Zipline startup will be much slower until this is fixed!",
+#     )
+#     del warnings
+# del global_calendar_dispatcher
 
 
 __all__ = [

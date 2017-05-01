@@ -31,6 +31,7 @@ cpdef enum:
 
 cdef class MinuteSimulationClock:
     cdef bool minute_emission
+    cdef bool daily_frequency
     cdef np.int64_t[:] market_opens_nanos, market_closes_nanos, bts_nanos, \
         sessions_nanos
     cdef dict minutes_by_session
@@ -40,8 +41,10 @@ cdef class MinuteSimulationClock:
                  market_opens,
                  market_closes,
                  before_trading_start_minutes,
-                 minute_emission=False):
+                 minute_emission=False,
+                 data_frequency="daily",):
         self.minute_emission = minute_emission
+        self.daily_frequency = data_frequency == "daily"
 
         self.market_opens_nanos = market_opens.values.astype(np.int64)
         self.market_closes_nanos = market_closes.values.astype(np.int64)
@@ -56,15 +59,29 @@ cdef class MinuteSimulationClock:
         cdef dict minutes_by_session
         cdef int session_idx
         cdef np.int64_t session_nano
-        cdef np.ndarray[np.int64_t, ndim=1] minutes_nanos
+        cdef np.ndarray[np.int64_t, ndim=1] minutes_nanos, minutes_nanos1,\
+            minutes_nanos2
 
         minutes_by_session = {}
         for session_idx, session_nano in enumerate(self.sessions_nanos):
-            minutes_nanos = np.arange(
-                self.market_opens_nanos[session_idx],
-                self.market_closes_nanos[session_idx] + _nanos_in_minute,
-                _nanos_in_minute
-            )
+            if self.daily_frequency:
+                minutes_nanos = np.arange(
+                    self.market_opens_nanos[session_idx],
+                    self.market_closes_nanos[session_idx] + _nanos_in_minute,
+                    _nanos_in_minute
+                )
+            else:
+                minutes_nanos1 = np.arange(
+                    self.market_opens_nanos[session_idx],
+                    self.market_opens_nanos[session_idx] + 120*_nanos_in_minute,
+                    _nanos_in_minute
+                )
+                minutes_nanos2 = np.arange(
+                    self.market_opens_nanos[session_idx] + 210*_nanos_in_minute,
+                    self.market_closes_nanos[session_idx] + _nanos_in_minute,
+                    _nanos_in_minute
+                )
+                minutes_nanos = np.array([minutes_nanos1, minutes_nanos2]).ravel()
             minutes_by_session[session_nano] = pd.to_datetime(
                 minutes_nanos, utc=True, box=True
             )

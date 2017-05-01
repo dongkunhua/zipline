@@ -291,7 +291,7 @@ class TradingAlgorithm(object):
         # If a schedule has been provided, pop it. Otherwise, use NYSE.
         self.trading_calendar = kwargs.pop(
             'trading_calendar',
-            get_calendar("NYSE")
+            get_calendar("SH")
         )
 
         # set the capital base
@@ -526,7 +526,7 @@ class TradingAlgorithm(object):
         before_trading_start_minutes = days_at_time(
             self.sim_params.sessions,
             time(8, 45),
-            "US/Eastern"
+            self.trading_environment.exchange_tz
         )
 
         return MinuteSimulationClock(
@@ -535,6 +535,7 @@ class TradingAlgorithm(object):
             market_closes,
             before_trading_start_minutes,
             minute_emission=minutely_emission,
+            data_frequency = self.data_frequency,
         )
 
     def _create_benchmark_source(self):

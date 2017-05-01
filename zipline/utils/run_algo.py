@@ -129,11 +129,16 @@ def _run(handle_data,
                 "invalid url %r, must begin with 'sqlite:///'" %
                 str(bundle_data.asset_finder.engine.url),
             )
-        env = TradingEnvironment(asset_db_path=connstr)
+        env = TradingEnvironment(
+            # load=lambda x:x,
+            bm_symbol='000001.SS',
+            exchange_tz="Asia/Shanghai",
+            trading_calendar=get_calendar("SH"),
+            asset_db_path=connstr)
         first_trading_day =\
             bundle_data.equity_minute_bar_reader.first_trading_day
         data = DataPortal(
-            env.asset_finder, get_calendar("NYSE"),
+            env.asset_finder, get_calendar("SH"),
             first_trading_day=first_trading_day,
             equity_minute_reader=bundle_data.equity_minute_bar_reader,
             equity_daily_reader=bundle_data.equity_daily_bar_reader,

@@ -77,8 +77,8 @@ class TradingEnvironment(object):
     def __init__(
         self,
         load=None,
-        bm_symbol='^GSPC',
-        exchange_tz="US/Eastern",
+        bm_symbol='000001.SH',
+        exchange_tz="Asia/Shanghai",
         trading_calendar=None,
         asset_db_path=':memory:'
     ):
@@ -88,7 +88,7 @@ class TradingEnvironment(object):
             load = load_market_data
 
         if not trading_calendar:
-            trading_calendar = get_calendar("NYSE")
+            trading_calendar = get_calendar("SH")
 
         self.benchmark_returns, self.treasury_curves = load(
             trading_calendar.day,

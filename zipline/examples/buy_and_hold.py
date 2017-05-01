@@ -13,21 +13,23 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from zipline.api import order, symbol
-
-stocks = ['AAPL', 'MSFT']
+from zipline.api import order, symbol, symbols
+import pytz
+stocks = ['600000.SS', '000001.SZ']
 
 
 def initialize(context):
+    # context.set_benchmark(symbol("000001.SZ"))
     context.has_ordered = False
     context.stocks = stocks
 
 
 def handle_data(context, data):
-    if not context.has_ordered:
-        for stock in context.stocks:
-            order(symbol(stock), 100)
-        context.has_ordered = True
+    print context.datetime.tz_convert(pytz.timezone("Asia/Shanghai"))
+    print data.history(symbols("000001.SZ"), "price", 10, '1m').iloc[0]
+    # print data.history(symbols("000001.SZ"), "price", 2, '1m').iloc[0]
+    # print data.history(symbols("000001.SZ"), "close", 1, '1d')
+    # print data.current(symbol("000001.SZ"), 'price')
 
 
 def _test_args():

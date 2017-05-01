@@ -13,6 +13,7 @@ from .core import (
     unregister,
 )
 from .yahoo import yahoo_equities
+from .hs300 import hs300_equities
 
 
 __all__ = [

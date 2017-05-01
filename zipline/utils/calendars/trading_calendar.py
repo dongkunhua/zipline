@@ -1,4 +1,5 @@
-#
+#!coding=utf-8
+# #
 # Copyright 2016 Quantopian, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -668,7 +669,8 @@ class TradingCalendar(with_metaclass(ABCMeta)):
 
         deltas = closes_in_ns - opens_in_ns
 
-        # + 1 because we want 390 days per standard day, not 389
+        # + 1 because we want 390 minutes per standard day, not 389
+        # 美国交易日是390分钟，中国交易日是330分钟，且中间有一个半小时休市
         daily_sizes = (deltas / NANOS_IN_MINUTE) + 1
         num_minutes = np.sum(daily_sizes).astype(np.int64)
 

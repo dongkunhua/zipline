@@ -8,13 +8,13 @@ import requests
 from zipline.utils.calendars import register_calendar_alias
 from zipline.utils.cli import maybe_show_progress
 from .core import register
-
+from zipline.utils.calendars import get_calendar
 
 def _cachpath(symbol, type_):
     return '-'.join((symbol.replace(os.path.sep, '_'), type_))
 
 
-def yahoo_equities(symbols, start=None, end=None):
+def hs300_equities(symbols=None, start=None, end=None):
     """Create a data bundle ingest function from a set of symbols loaded from
     yahoo.
 
@@ -54,7 +54,15 @@ def yahoo_equities(symbols, start=None, end=None):
     The sids for each symbol will be the index into the symbols sequence.
     """
     # strict this in memory so that we can reiterate over it
+    from net.RPCClient import request
+    from zipline.data.loader import get_data, get_sector
+
+    if symbols is None:
+        symbols = get_sector("000300.SH")
+
     symbols = tuple(symbols)
+    trading_days = get_calendar('SH').all_sessions
+    trading_days = trading_days.astype("datetime64[ns]")
 
     def ingest(environ,
                asset_db_writer,
@@ -82,6 +90,7 @@ def yahoo_equities(symbols, start=None, end=None):
             ('symbol', 'object'),
         ]))
 
+
         def _pricing_iter():
             sid = 0
             with maybe_show_progress(
@@ -90,23 +99,34 @@ def yahoo_equities(symbols, start=None, end=None):
                     label='Downloading Yahoo pricing data: ') as it, \
                     requests.Session() as session:
                 for symbol in it:
+                    print symbol
                     path = _cachpath(symbol, 'ohlcv')
                     try:
                         df = cache[path]
                     except KeyError:
-                        df = cache[path] = DataReader(
+                        df = cache[path] = get_data(
                             symbol,
-                            'yahoo',
                             start,
-                            end,
-                            session=session,
-                        ).sort_index()
+                            end
+                        )
+                        # df = cache[path] = DataReader(
+                        #     symbol,
+                        #     'yahoo',
+                        #     start,
+                        #     end,
+                        #     session=session,
+                        # ).sort_index()
 
                     # the start date is the date of the first trade and
                     # the end date is the date of the last trade
+
                     df = df[df.Volume>0]
                     start_date = df.index[0]
                     end_date = df.index[-1]
+                    # df = pd.DataFrame()
+                    df = df.reindex(trading_days[(trading_days>=start_date)])
+                    df.Volume = df.Volume.fillna(0)
+                    df = df.ffill()
                     # The auto_close date is the day after the last trade.
                     ac_date = end_date + pd.Timedelta(days=1)
                     metadata.iloc[sid] = start_date, end_date, ac_date, symbol
@@ -131,7 +151,7 @@ def yahoo_equities(symbols, start=None, end=None):
         # Hardcode the exchange to "YAHOO" for all assets and (elsewhere)
         # register "YAHOO" to resolve to the NYSE calendar, because these are
         # all equities and thus can use the NYSE calendar.
-        metadata['exchange'] = "YAHOO"
+        metadata['exchange'] = "hs300"
         asset_db_writer.write(equities=metadata)
 
         adjustments = []
@@ -145,13 +165,20 @@ def yahoo_equities(symbols, start=None, end=None):
                 try:
                     df = cache[path]
                 except KeyError:
-                    df = cache[path] = DataReader(
-                        symbol,
-                        'yahoo-actions',
-                        start,
-                        end,
-                        session=session,
-                    ).sort_index()
+                    data = request(
+                        "123.56.77.52:10030",
+                        "Divid",
+                        {"symbol": symbol}
+                    )
+                    df = pd.DataFrame(data).sort_index()
+                    # print df
+                    # df = cache[path] = DataReader(
+                    #     symbol,
+                    #     'yahoo-actions',
+                    #     start,
+                    #     end,
+                    #     session=session,
+                    # ).sort_index()
 
                 df['sid'] = symbol_map[symbol]
                 adjustments.append(df)
@@ -159,6 +186,8 @@ def yahoo_equities(symbols, start=None, end=None):
         adj_df = pd.concat(adjustments)
         adj_df.index.name = 'date'
         adj_df.reset_index(inplace=True)
+        adj_df.date = pd.to_datetime(adj_df.date)
+        adj_df = adj_df[adj_df.date > pd.Timestamp("2010-01-01")]
 
         splits = adj_df[adj_df.action == 'SPLIT']
         splits = splits.rename(
@@ -183,22 +212,10 @@ def yahoo_equities(symbols, start=None, end=None):
 
 # bundle used when creating test data
 register(
-    '.test',
-    yahoo_equities(
-        (
-            'AMD',
-            'CERN',
-            'COST',
-            'DELL',
-            'GPS',
-            'INTC',
-            'MMM',
-            'AAPL',
-            'MSFT',
-        ),
-        pd.Timestamp('2004-01-02', tz='utc'),
-        pd.Timestamp('2015-01-01', tz='utc'),
+    'hs300',
+    hs300_equities(
     ),
-)
 
-register_calendar_alias("YAHOO", "NYSE")
+)
+#
+register_calendar_alias("hs300", "SH")
