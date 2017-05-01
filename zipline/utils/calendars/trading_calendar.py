@@ -39,7 +39,7 @@ from zipline.utils.input_validation import (
     coerce,
     preprocess,
 )
-from zipline.utils.memoize import remember_last, lazyval
+from zipline.utils.memoize import lazyval
 
 start_default = pd.Timestamp('1990-01-01', tz='UTC')
 end_base = pd.Timestamp('today', tz='UTC')
@@ -238,6 +238,7 @@ class TradingCalendar(with_metaclass(ABCMeta)):
 
     # -----
 
+    @property
     def opens(self):
         return self.schedule.market_open
 
@@ -460,7 +461,10 @@ class TradingCalendar(with_metaclass(ABCMeta)):
         pd.DateTimeIndex
             All the minutes for the given session.
         """
-        return self.minutes_in_range(*self.schedule.loc[session_label])
+        return self.minutes_in_range(
+            start_minute=self.schedule.at[session_label, 'market_open'],
+            end_minute=self.schedule.at[session_label, 'market_close'],
+        )
 
     def minutes_window(self, start_dt, count):
         start_dt_nanos = start_dt.value
@@ -635,13 +639,39 @@ class TradingCalendar(with_metaclass(ABCMeta)):
         (Timestamp, Timestamp)
             The open and close for the given session.
         """
-        o_and_c = self.schedule.loc[session_label]
+        sched = self.schedule
 
         # `market_open` and `market_close` should be timezone aware, but pandas
         # 0.16.1 does not appear to support this:
         # http://pandas.pydata.org/pandas-docs/stable/whatsnew.html#datetime-with-tz  # noqa
-        return (o_and_c['market_open'].tz_localize('UTC'),
-                o_and_c['market_close'].tz_localize('UTC'))
+        return (
+            sched.at[session_label, 'market_open'].tz_localize('UTC'),
+            sched.at[session_label, 'market_close'].tz_localize('UTC'),
+        )
+
+    def session_open(self, session_label):
+        return self.schedule.at[
+            session_label,
+            'market_open'
+        ].tz_localize('UTC')
+
+    def session_close(self, session_label):
+        return self.schedule.at[
+            session_label,
+            'market_close'
+        ].tz_localize('UTC')
+
+    def session_opens_in_range(self, start_session_label, end_session_label):
+        return self.schedule.loc[
+            start_session_label:end_session_label,
+            'market_open',
+        ].dt.tz_localize('UTC')
+
+    def session_closes_in_range(self, start_session_label, end_session_label):
+        return self.schedule.loc[
+            start_session_label:end_session_label,
+            'market_close',
+        ].dt.tz_localize('UTC')
 
     @property
     def all_sessions(self):
@@ -655,8 +685,13 @@ class TradingCalendar(with_metaclass(ABCMeta)):
     def last_session(self):
         return self.all_sessions[-1]
 
-    @property
-    @remember_last
+    def execution_time_from_open(self, open_dates):
+        return open_dates
+
+    def execution_time_from_close(self, close_dates):
+        return close_dates
+
+    @lazyval
     def all_minutes(self):
         """
         Returns a DatetimeIndex representing all the minutes in this calendar.

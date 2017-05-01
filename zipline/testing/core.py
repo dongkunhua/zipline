@@ -39,6 +39,7 @@ from zipline.data.us_equity_pricing import (
     BcolzDailyBarWriter,
     SQLiteAdjustmentWriter,
 )
+from zipline.finance.blotter import Blotter
 from zipline.finance.trading import TradingEnvironment
 from zipline.finance.order import ORDER_STATUS
 from zipline.lib.labelarray import LabelArray
@@ -405,7 +406,7 @@ def check_arrays(x, y, err_msg='', verbose=True, check_dtypes=True):
         )
         # Fill NaTs with zero for comparison.
         x = np.where(x_isnat, np.zeros_like(x), x)
-        y = np.where(x_isnat, np.zeros_like(x), x)
+        y = np.where(y_isnat, np.zeros_like(y), y)
 
     return assert_array_equal(x, y, err_msg=err_msg, verbose=verbose)
 
@@ -748,6 +749,9 @@ class FetcherDataPortal(DataPortal):
         # otherwise just return a fixed value
         return int(asset)
 
+    # XXX: These aren't actually the methods that are used by the superclasses,
+    # so these don't do anything, and this class will likely produce unexpected
+    # results for history().
     def _get_daily_window_for_sid(self, asset, field, days_in_window,
                                   extra_slot=True):
         return np.arange(days_in_window, dtype=np.float64)
@@ -1080,7 +1084,9 @@ def temp_pipeline_engine(calendar, sids, random_seed, symbols=None):
     )
 
     loader = make_seeded_random_loader(random_seed, calendar, sids)
-    get_loader = lambda column: loader
+
+    def get_loader(column):
+        return loader
 
     with tmp_asset_finder(equities=equity_info) as finder:
         yield SimplePipelineEngine(get_loader, calendar, finder)
@@ -1136,16 +1142,20 @@ def parameter_space(__fail_fast=False, **params):
                 "supplied to parameter_space()." % extra
             )
 
-        param_sets = product(*(params[name] for name in argnames))
+        make_param_sets = lambda: product(*(params[name] for name in argnames))
 
         if __fail_fast:
             @wraps(f)
             def wrapped(self):
-                for args in param_sets:
+                for args in make_param_sets():
                     f(self, *args)
             return wrapped
         else:
-            return subtest(param_sets, *argnames)(f)
+            @wraps(f)
+            def wrapped(*args, **kwargs):
+                subtest(make_param_sets(), *argnames)(f)(*args, **kwargs)
+
+        return wrapped
 
     return decorator
 
@@ -1497,6 +1507,18 @@ def ensure_doctest(f, name=None):
         f.__name__ if name is None else name
     ] = f
     return f
+
+
+class RecordBatchBlotter(Blotter):
+    """Blotter that tracks how its batch_order method was called.
+    """
+    def __init__(self, data_frequency):
+        super(RecordBatchBlotter, self).__init__(data_frequency)
+        self.order_batch_called = []
+
+    def batch_order(self, *args, **kwargs):
+        self.order_batch_called.append((args, kwargs))
+        return super(RecordBatchBlotter, self).batch_order(*args, **kwargs)
 
 
 ####################################

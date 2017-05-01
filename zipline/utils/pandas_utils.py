@@ -91,6 +91,37 @@ def mask_between_time(dts, start, end, include_start=True, include_end=True):
     )
 
 
+def find_in_sorted_index(dts, dt):
+    """
+    Find the index of ``dt`` in ``dts``.
+
+    This function should be used instead of `dts.get_loc(dt)` if the index is
+    large enough that we don't want to initialize a hash table in ``dts``. In
+    particular, this should always be used on minutely trading calendars.
+
+    Parameters
+    ----------
+    dts : pd.DatetimeIndex
+        Index in which to look up ``dt``. **Must be sorted**.
+    dt : pd.Timestamp
+        ``dt`` to be looked up.
+
+    Returns
+    -------
+    ix : int
+        Integer index such that dts[ix] == dt.
+
+    Raises
+    ------
+    KeyError
+        If dt is not in ``dts``.
+    """
+    ix = dts.searchsorted(dt)
+    if dts[ix] != dt:
+        raise LookupError("{dt} is not in {dts}".format(dt=dt, dts=dts))
+    return ix
+
+
 def nearest_unequal_elements(dts, dt):
     """
     Find values in ``dts`` closest but not equal to ``dt``.
@@ -166,3 +197,28 @@ def ignore_pandas_nan_categorical_warning():
             category=FutureWarning,
         )
         yield
+
+
+_INDEXER_NAMES = [
+    '_' + name for (name, _) in pd.core.indexing.get_indexers_list()
+]
+
+
+def clear_dataframe_indexer_caches(df):
+    """
+    Clear cached attributes from a pandas DataFrame.
+
+    By default pandas memoizes indexers (`iloc`, `loc`, `ix`, etc.) objects on
+    DataFrames, resulting in refcycles that can lead to unexpectedly long-lived
+    DataFrames. This function attempts to clear those cycles by deleting the
+    cached indexers from the frame.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+    """
+    for attr in _INDEXER_NAMES:
+        try:
+            delattr(df, attr)
+        except AttributeError:
+            pass

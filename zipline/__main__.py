@@ -251,6 +251,12 @@ def run(ctx,
 def zipline_magic(line, cell=None):
     """The zipline IPython cell magic.
     """
+    load_extensions(
+        default=True,
+        extensions=[],
+        strict=True,
+        environ=os.environ,
+    )
     try:
         return run.main(
             # put our overrides at the start of the parameter list so that
@@ -317,7 +323,7 @@ def ingest(bundle, assets_version, show_progress):
     help='The data bundle to clean.',
 )
 @click.option(
-    '-b',
+    '-e',
     '--before',
     type=Timestamp(),
     help='Clear all data before TIMESTAMP.'
@@ -336,7 +342,7 @@ def ingest(bundle, assets_version, show_progress):
     type=int,
     metavar='N',
     help='Clear all but the last N downloads.'
-    ' This may not be passed with -b / --before or -a / --after',
+    ' This may not be passed with -e / --before or -a / --after',
 )
 def clean(bundle, before, after, keep_last):
     """Clean up data downloaded with the ingest command.

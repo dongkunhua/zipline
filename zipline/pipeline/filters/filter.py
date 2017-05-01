@@ -24,6 +24,7 @@ from zipline.pipeline.expression import (
     NumericalExpression,
 )
 from zipline.pipeline.mixins import (
+    AliasedMixin,
     CustomTermMixin,
     DownsampledMixin,
     LatestMixin,
@@ -207,6 +208,10 @@ class Filter(RestrictedDTypeMixin, ComputableTerm):
     def _downsampled_type(self):
         return DownsampledMixin.make_downsampled_type(Filter)
 
+    @classlazyval
+    def _aliased_type(self):
+        return AliasedMixin.make_aliased_type(Filter)
+
 
 class NumExprFilter(NumericalExpression, Filter):
     """
@@ -329,6 +334,7 @@ class PercentileFilter(SingleInputMixin, Filter):
             raise BadPercentileBounds(
                 min_percentile=self._min_percentile,
                 max_percentile=self._max_percentile,
+                upper_bound=100.0
             )
         return super(PercentileFilter, self)._validate()
 
@@ -496,11 +502,37 @@ class SingleAsset(Filter):
         return out
 
 
-class SpecificAssets(Filter):
+class StaticSids(Filter):
+    """
+    A Filter that computes True for a specific set of predetermined sids.
+
+    ``StaticSids`` is mostly useful for debugging or for interactively
+    computing pipeline terms for a fixed set of sids that are known ahead of
+    time.
+
+    Parameters
+    ----------
+    sids : iterable[int]
+        An iterable of sids for which to filter.
+    """
+    inputs = ()
+    window_length = 0
+    params = ('sids',)
+
+    def __new__(cls, sids):
+        sids = frozenset(sids)
+        return super(StaticSids, cls).__new__(cls, sids=sids)
+
+    def _compute(self, arrays, dates, sids, mask):
+        my_columns = sids.isin(self.params['sids'])
+        return repeat_first_axis(my_columns, len(mask)) & mask
+
+
+class StaticAssets(StaticSids):
     """
     A Filter that computes True for a specific set of predetermined assets.
 
-    ``SpecificAssets`` is mostly useful for debugging or for interactively
+    ``StaticAssets`` is mostly useful for debugging or for interactively
     computing pipeline terms for a fixed set of assets that are known ahead of
     time.
 
@@ -509,14 +541,6 @@ class SpecificAssets(Filter):
     assets : iterable[Asset]
         An iterable of assets for which to filter.
     """
-    inputs = ()
-    window_length = 0
-    params = ('sids',)
-
     def __new__(cls, assets):
         sids = frozenset(asset.sid for asset in assets)
-        return super(SpecificAssets, cls).__new__(cls, sids=sids)
-
-    def _compute(self, arrays, dates, sids, mask):
-        my_columns = sids.isin(self.params['sids'])
-        return repeat_first_axis(my_columns, len(mask)) & mask
+        return super(StaticAssets, cls).__new__(cls, sids)

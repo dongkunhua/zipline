@@ -36,18 +36,19 @@ from numpy import (
     uint32,
 )
 from pandas import (
-    isnull,
     DataFrame,
-    read_csv,
-    Timestamp,
+    DatetimeIndex,
+    isnull,
     NaT,
-    DatetimeIndex
+    read_csv,
+    read_sql,
+    Timestamp,
 )
 from pandas.tslib import iNaT
 from six import (
     iteritems,
-    viewkeys,
     string_types,
+    viewkeys,
 )
 
 from zipline.data.session_bars import SessionBarReader
@@ -60,8 +61,8 @@ from zipline.utils.calendars import get_calendar
 from zipline.utils.functional import apply
 from zipline.utils.preprocess import call
 from zipline.utils.input_validation import (
-    preprocess,
     expect_element,
+    preprocess,
     verify_indices_all_unique,
 )
 from zipline.utils.sqlite_utils import group_into_chunks, coerce_string_to_conn
@@ -636,21 +637,21 @@ class BcolzDailyBarReader(SessionBarReader):
             try:
                 ix = self.sid_day_index(asset, search_day)
             except NoDataBeforeDate:
-                return None
+                return NaT
             except NoDataAfterDate:
                 prev_day_ix = self.sessions.get_loc(search_day) - 1
                 if prev_day_ix > -1:
                     search_day = self.sessions[prev_day_ix]
                 continue
             except NoDataOnDate:
-                return None
+                return NaT
             if volumes[ix] != 0:
                 return search_day
             prev_day_ix = self.sessions.get_loc(search_day) - 1
             if prev_day_ix > -1:
                 search_day = self.sessions[prev_day_ix]
             else:
-                return None
+                return NaT
 
     def sid_day_index(self, sid, day):
         """
@@ -1039,11 +1040,11 @@ class SQLiteAdjustmentWriter(object):
             dividend_payouts['ex_date'] = dividend_payouts['ex_date'].values.\
                 astype('datetime64[s]').astype(integer)
             dividend_payouts['record_date'] = \
-                dividend_payouts['record_date'].values.astype('datetime64[s]').\
-                astype(integer)
+                dividend_payouts['record_date'].values.\
+                astype('datetime64[s]').astype(integer)
             dividend_payouts['declared_date'] = \
-                dividend_payouts['declared_date'].values.astype('datetime64[s]').\
-                astype(integer)
+                dividend_payouts['declared_date'].values.\
+                astype('datetime64[s]').astype(integer)
             dividend_payouts['pay_date'] = \
                 dividend_payouts['pay_date'].values.astype('datetime64[s]').\
                 astype(integer)
@@ -1250,6 +1251,18 @@ class SQLiteAdjustmentReader(object):
     def __init__(self, conn):
         self.conn = conn
 
+        # Given the tables in the adjustments.db file, dict which knows which
+        # col names contain dates that have been coerced into ints.
+        self._datetime_int_cols = {
+            'dividend_payouts': ('declared_date', 'ex_date', 'pay_date',
+                                 'record_date'),
+            'dividends': ('effective_date',),
+            'mergers': ('effective_date',),
+            'splits': ('effective_date',),
+            'stock_dividend_payouts': ('declared_date', 'ex_date', 'pay_date',
+                                       'record_date')
+        }
+
     def load_adjustments(self, columns, dates, assets):
         return load_adjustments_from_sqlite(
             self.conn,
@@ -1316,3 +1329,49 @@ class SQLiteAdjustmentReader(object):
         c.close()
 
         return stock_divs
+
+    def unpack_db_to_component_dfs(self, convert_dates=False):
+        """Returns the set of known tables in the adjustments file in DataFrame
+        form.
+
+        Parameters
+        ----------
+        convert_dates : bool, optional
+            By default, dates are returned in seconds since EPOCH. If
+            convert_dates is True, all ints in date columns will be converted
+            to datetimes.
+
+        Returns
+        -------
+        dfs : dict{str->DataFrame}
+            Dictionary which maps table name to the corresponding DataFrame
+            version of the table, where all date columns have been coerced back
+            from int to datetime.
+        """
+
+        def _get_df_from_table(table_name, date_cols):
+
+            # Dates are stored in second resolution as ints in adj.db tables.
+            # Need to specifically convert them as UTC, not local time.
+            kwargs = (
+                {'parse_dates': {col: {'unit': 's', 'utc': True}
+                                 for col in date_cols}
+                 }
+                if convert_dates
+                else {}
+            )
+
+            return read_sql(
+                'select * from "{}"'.format(table_name),
+                self.conn,
+                index_col='index',
+                **kwargs
+            ).rename_axis(None)
+
+        return {
+            t_name: _get_df_from_table(
+                t_name,
+                date_cols
+            )
+            for t_name, date_cols in self._datetime_int_cols.items()
+        }

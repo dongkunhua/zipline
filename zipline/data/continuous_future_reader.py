@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 from zipline.data.session_bars import SessionBarReader
 
 
@@ -45,8 +46,6 @@ class ContinuousFutureSessionBarReader(SessionBarReader):
         # Get partitions
         partitions_by_asset = {}
         for asset in assets:
-            rolls_by_asset[asset] = rf.get_rolls(
-                asset.root_symbol, start_date, end_date, asset.offset)
             partitions = []
             partitions_by_asset[asset] = partitions
             rolls = rolls_by_asset[asset]
@@ -135,7 +134,7 @@ class ContinuousFutureSessionBarReader(SessionBarReader):
             If the given dt is not a valid market minute (in minute mode) or
             session (in daily mode) according to this reader's tradingcalendar.
         """
-        rf = self._roll_finders[continuous_future.roll]
+        rf = self._roll_finders[continuous_future.roll_style]
         sid = (rf.get_contract_center(continuous_future.root_symbol,
                                       dt,
                                       continuous_future.offset))
@@ -164,6 +163,8 @@ class ContinuousFutureSessionBarReader(SessionBarReader):
         sid = (rf.get_contract_center(asset.root_symbol,
                                       dt,
                                       asset.offset))
+        if sid is None:
+            return pd.NaT
         contract = rf.asset_finder.retrieve_asset(sid)
         return self._bar_reader.get_last_traded_dt(contract, dt)
 
@@ -348,6 +349,8 @@ class ContinuousFutureMinuteBarReader(SessionBarReader):
         sid = (rf.get_contract_center(asset.root_symbol,
                                       dt,
                                       asset.offset))
+        if sid is None:
+            return pd.NaT
         contract = rf.asset_finder.retrieve_asset(sid)
         return self._bar_reader.get_last_traded_dt(contract, dt)
 

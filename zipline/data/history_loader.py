@@ -18,8 +18,8 @@ from abc import (
     abstractproperty,
 )
 
+from numpy import concatenate
 from lru import LRU
-from numpy import around, hstack
 from pandas import isnull
 from pandas.tslib import normalize_date
 from toolz import sliding_window
@@ -34,6 +34,7 @@ from zipline.lib.adjustment import Float64Multiply, Float64Add
 from zipline.utils.cache import ExpiringCache
 from zipline.utils.memoize import lazyval
 from zipline.utils.numpy_utils import float64_dtype
+from zipline.utils.pandas_utils import find_in_sorted_index
 
 
 class HistoryCompatibleUSEquityAdjustmentReader(object):
@@ -184,15 +185,15 @@ class ContinuousFutureAdjustmentReader(object):
 
     def _make_adjustment(self,
                          adjustment_type,
-                         left_close,
-                         right_open,
+                         front_close,
+                         back_close,
                          end_loc):
-        adj_base = left_close - right_open
+        adj_base = back_close - front_close
         if adjustment_type == 'mul':
-            adj_value = 1.0 - adj_base / left_close
+            adj_value = 1.0 + adj_base / front_close
             adj_class = Float64Multiply
         elif adjustment_type == 'add':
-            adj_value = -adj_base
+            adj_value = adj_base
             adj_class = Float64Add
         return adj_class(0,
                          end_loc,
@@ -215,37 +216,34 @@ class ContinuousFutureAdjustmentReader(object):
 
         adjs = {}
 
-        for left, right in sliding_window(2, rolls):
-            left_sid, right_dt = left
-            right_sid = right[0]
-            left_dt = tc.previous_session_label(right_dt)
+        for front, back in sliding_window(2, rolls):
+            front_sid, roll_dt = front
+            back_sid = back[0]
+            dt = tc.previous_session_label(roll_dt)
             if self._frequency == 'minute':
-                _, left_dt = tc.open_and_close_for_session(left_dt)
-                right_dt, _ = tc.open_and_close_for_session(right_dt)
-            partitions.append((left_sid,
-                               right_sid,
-                               left_dt,
-                               right_dt))
-
+                dt = tc.open_and_close_for_session(dt)[1]
+                roll_dt = tc.open_and_close_for_session(roll_dt)[0]
+            partitions.append((front_sid,
+                               back_sid,
+                               dt,
+                               roll_dt))
         for partition in partitions:
-            left_sid, right_sid, left_dt, right_dt = partition
-            last_left_dt = self._bar_reader.get_last_traded_dt(
-                self._asset_finder.retrieve_asset(left_sid),
-                left_dt)
-            last_right_dt = self._bar_reader.get_last_traded_dt(
-                self._asset_finder.retrieve_asset(right_sid),
-                right_dt)
-            if isnull(last_left_dt) or isnull(last_right_dt):
+            front_sid, back_sid, dt, roll_dt = partition
+            last_front_dt = self._bar_reader.get_last_traded_dt(
+                self._asset_finder.retrieve_asset(front_sid), dt)
+            last_back_dt = self._bar_reader.get_last_traded_dt(
+                self._asset_finder.retrieve_asset(back_sid), dt)
+            if isnull(last_front_dt) or isnull(last_back_dt):
                 continue
-            left_close = self._bar_reader.get_value(
-                left_sid, last_left_dt, 'close')
-            right_open = self._bar_reader.get_value(
-                right_sid, last_right_dt, 'open')
-            adj_loc = dts.searchsorted(right_dt)
+            front_close = self._bar_reader.get_value(
+                front_sid, last_front_dt, 'close')
+            back_close = self._bar_reader.get_value(
+                back_sid, last_back_dt, 'close')
+            adj_loc = dts.searchsorted(roll_dt)
             end_loc = adj_loc - 1
             adj = self._make_adjustment(cf.adjustment,
-                                        left_close,
-                                        right_open,
+                                        front_close,
+                                        back_close,
                                         end_loc)
             try:
                 adjs[adj_loc].append(adj)
@@ -271,7 +269,7 @@ class SlidingWindow(object):
     def __init__(self, window, size, cal_start, offset):
         self.window = window
         self.cal_start = cal_start
-        self.current = around(next(window), 3)
+        self.current = next(window)
         self.offset = offset
         self.most_recent_ix = self.cal_start + size
 
@@ -286,7 +284,7 @@ class SlidingWindow(object):
             return self.current
 
         target = end_ix - self.cal_start - self.offset + 1
-        self.current = around(self.window.seek(target), 3)
+        self.current = self.window.seek(target)
 
         self.most_recent_ix = end_ix
         return self.current
@@ -310,7 +308,8 @@ class HistoryLoader(with_metaclass(ABCMeta)):
     def __init__(self, trading_calendar, reader, equity_adjustment_reader,
                  asset_finder,
                  roll_finders=None,
-                 sid_cache_size=1000):
+                 sid_cache_size=1000,
+                 prefetch_length=0):
         self.trading_calendar = trading_calendar
         self._asset_finder = asset_finder
         self._reader = reader
@@ -330,13 +329,10 @@ class HistoryLoader(with_metaclass(ABCMeta)):
             field: ExpiringCache(LRU(sid_cache_size))
             for field in self.FIELDS
         }
+        self._prefetch_length = prefetch_length
 
     @abstractproperty
     def _frequency(self):
-        pass
-
-    @abstractproperty
-    def _prefetch_length(self):
         pass
 
     @abstractproperty
@@ -381,34 +377,38 @@ class HistoryLoader(with_metaclass(ABCMeta)):
         size = len(dts)
         asset_windows = {}
         needed_assets = []
+        cal = self._calendar
 
         assets = self._asset_finder.retrieve_all(assets)
+        end_ix = find_in_sorted_index(cal, end)
 
         for asset in assets:
             try:
-                asset_windows[asset] = self._window_blocks[field].get(
+                window = self._window_blocks[field].get(
                     (asset, size, is_perspective_after), end)
             except KeyError:
                 needed_assets.append(asset)
+            else:
+                if end_ix < window.most_recent_ix:
+                    # Window needs reset. Requested end index occurs before the
+                    # end index from the previous history call for this window.
+                    # Grab new window instead of rewinding adjustments.
+                    needed_assets.append(asset)
+                else:
+                    asset_windows[asset] = window
 
         if needed_assets:
-            start = dts[0]
-
             offset = 0
-            try:
-                start_ix = self._calendar.get_loc(start)
-            except KeyError:
-                raise KeyError("{0} not in calendar [{1}...{2}]".format(
-                    start, self._calendar[0], self._calendar[-1]))
-            try:
-                end_ix = self._calendar.get_loc(end)
-            except KeyError:
-                raise KeyError("{0} not in calendar [{1}...{2}]".format(
-                    end, self._calendar[0], self._calendar[-1]))
-            cal = self._calendar
+            start_ix = find_in_sorted_index(cal, dts[0])
+
             prefetch_end_ix = min(end_ix + self._prefetch_length, len(cal) - 1)
             prefetch_end = cal[prefetch_end_ix]
             prefetch_dts = cal[start_ix:prefetch_end_ix + 1]
+            if is_perspective_after:
+                adj_end_ix = min(prefetch_end_ix + 1, len(cal) - 1)
+                adj_dts = cal[start_ix:adj_end_ix + 1]
+            else:
+                adj_dts = prefetch_dts
             prefetch_len = len(prefetch_dts)
             array = self._array(prefetch_dts, needed_assets, field)
 
@@ -429,7 +429,7 @@ class HistoryLoader(with_metaclass(ABCMeta)):
                     adj_reader = None
                 if adj_reader is not None:
                     adjs = adj_reader.load_adjustments(
-                        [field], prefetch_dts, [asset])[0]
+                        [field], adj_dts, [asset])[0]
                 else:
                     adjs = {}
                 window = window_type(
@@ -528,8 +528,12 @@ class HistoryLoader(with_metaclass(ABCMeta)):
                                              dts,
                                              field,
                                              is_perspective_after)
-        end_ix = self._calendar.get_loc(dts[-1])
-        return hstack([window.get(end_ix) for window in block])
+        end_ix = self._calendar.searchsorted(dts[-1])
+
+        return concatenate(
+            [window.get(end_ix) for window in block],
+            axis=1,
+        ).round(3)
 
 
 class DailyHistoryLoader(HistoryLoader):
@@ -537,10 +541,6 @@ class DailyHistoryLoader(HistoryLoader):
     @property
     def _frequency(self):
         return 'daily'
-
-    @property
-    def _prefetch_length(self):
-        return 40
 
     @property
     def _calendar(self):
@@ -561,15 +561,12 @@ class MinuteHistoryLoader(HistoryLoader):
     def _frequency(self):
         return 'minute'
 
-    @property
-    def _prefetch_length(self):
-        return 1560
-
     @lazyval
     def _calendar(self):
         mm = self.trading_calendar.all_minutes
-        return mm[mm.slice_indexer(start=self._reader.first_trading_day,
-                                   end=self._reader.last_available_dt)]
+        start = mm.searchsorted(self._reader.first_trading_day)
+        end = mm.searchsorted(self._reader.last_available_dt, side='right')
+        return mm[start:end]
 
     def _array(self, dts, assets, field):
         return self._reader.load_raw_arrays(

@@ -182,7 +182,7 @@ from zipline.pipeline.loaders.utils import (
 )
 from zipline.pipeline.sentinels import NotSpecified
 from zipline.lib.adjusted_array import AdjustedArray, can_represent_dtype
-from zipline.lib.adjustment import Float64Overwrite
+from zipline.lib.adjustment import make_adjustment_from_indices, OVERWRITE
 from zipline.utils.input_validation import (
     expect_element,
     ensure_timezone,
@@ -206,8 +206,13 @@ is_invalid_deltas_node = complement(flip(isinstance, valid_deltas_node_types))
 get__name__ = op.attrgetter('__name__')
 
 
-class ExprData(namedtuple('ExprData', 'expr deltas checkpoints odo_kwargs')):
-    """A pair of expressions and data resources. The expresions will be
+_expr_data_base = namedtuple(
+    'ExprData', 'expr deltas checkpoints odo_kwargs apply_deltas_adjustments'
+)
+
+
+class ExprData(_expr_data_base):
+    """A pair of expressions and data resources. The expressions will be
     computed using the resources as the starting scope.
 
     Parameters
@@ -220,14 +225,23 @@ class ExprData(namedtuple('ExprData', 'expr deltas checkpoints odo_kwargs')):
         The forward fill checkpoints for the data.
     odo_kwargs : dict, optional
         The keyword arguments to forward to the odo calls internally.
+    apply_deltas_adjustments : bool, optional
+        Whether or not deltas adjustments should be applied to the baseline
+        values. If False, only novel deltas will be applied.
     """
-    def __new__(cls, expr, deltas=None, checkpoints=None, odo_kwargs=None):
+    def __new__(cls,
+                expr,
+                deltas=None,
+                checkpoints=None,
+                odo_kwargs=None,
+                apply_deltas_adjustments=True):
         return super(ExprData, cls).__new__(
             cls,
             expr,
             deltas,
             checkpoints,
             odo_kwargs or {},
+            apply_deltas_adjustments,
         )
 
     def __repr__(self):
@@ -239,6 +253,7 @@ class ExprData(namedtuple('ExprData', 'expr deltas checkpoints odo_kwargs')):
             str(self.deltas),
             str(self.checkpoints),
             self.odo_kwargs,
+            self.apply_deltas_adjustments,
         ))
 
 
@@ -547,7 +562,8 @@ def from_blaze(expr,
                odo_kwargs=None,
                missing_values=None,
                no_deltas_rule='warn',
-               no_checkpoints_rule='warn'):
+               no_checkpoints_rule='warn',
+               apply_deltas_adjustments=True,):
     """Create a Pipeline API object from a blaze expression.
 
     Parameters
@@ -560,7 +576,7 @@ def from_blaze(expr,
         by stepping up the expression tree and looking for another field
         with the name of ``expr._name`` + '_deltas'. If None is passed, no
         deltas will be used.
-    deltas : Expr, 'auto' or None, optional
+    checkpoints : Expr, 'auto' or None, optional
         The expression to use for the forward fill checkpoints.
         If the string 'auto' is passed, a checkpoints expr will be looked up
         by stepping up the expression tree and looking for another field
@@ -587,6 +603,10 @@ def from_blaze(expr,
         found. 'warn' says to raise a warning but continue.
         'raise' says to raise an exception if no deltas can be found.
         'ignore' says take no action and proceed with no deltas.
+    apply_deltas_adjustments : bool, optional
+        Whether or not deltas adjustments should be applied for this dataset.
+        True by default because not applying deltas adjustments is an exception
+        rather than the rule.
 
     Returns
     -------
@@ -714,6 +734,7 @@ def from_blaze(expr,
         if checkpoints is not None else
         None,
         odo_kwargs=odo_kwargs,
+        apply_deltas_adjustments=apply_deltas_adjustments
     )
     if single_column is not None:
         # We were passed a single column, extract and return it.
@@ -760,7 +781,7 @@ def overwrite_novel_deltas(baseline, deltas, dates):
 
 
 def overwrite_from_dates(asof, dense_dates, sparse_dates, asset_idx, value):
-    """Construct a `Float64Overwrite` with the correct
+    """Construct an Overwrite with the correct
     start and end date based on the asof date of the delta,
     the dense_dates, and the dense_dates.
 
@@ -775,7 +796,7 @@ def overwrite_from_dates(asof, dense_dates, sparse_dates, asset_idx, value):
     asset_idx : tuple of int
         The index of the asset in the block. If this is a tuple, then this
         is treated as the first and last index to use.
-    value : np.float64
+    value : any
         The value to overwrite with.
 
     Returns
@@ -815,7 +836,9 @@ def overwrite_from_dates(asof, dense_dates, sparse_dates, asset_idx, value):
         return
 
     first, last = asset_idx
-    yield Float64Overwrite(first_row, last_row, first, last, value)
+    yield make_adjustment_from_indices(
+        first_row, last_row, first, last, OVERWRITE, value
+    )
 
 
 def adjustments_from_deltas_no_sids(dense_dates,
@@ -984,14 +1007,17 @@ class BlazeLoader(dict):
         except ValueError:
             raise AssertionError('all columns must come from the same dataset')
 
-        expr, deltas, checkpoints, odo_kwargs = self[dataset]
+        expr, deltas, checkpoints, odo_kwargs, apply_deltas_adjustments = self[
+            dataset
+        ]
         have_sids = (dataset.ndim == 2)
         asset_idx = pd.Series(index=assets, data=np.arange(len(assets)))
         assets = list(map(int, assets))  # coerce from numpy.int64
-        added_query_fields = [AD_FIELD_NAME, TS_FIELD_NAME] + (
-            [SID_FIELD_NAME] if have_sids else []
+        added_query_fields = {AD_FIELD_NAME, TS_FIELD_NAME} | (
+            {SID_FIELD_NAME} if have_sids else set()
         )
-        colnames = added_query_fields + list(map(getname, columns))
+        requested_columns = set(map(getname, columns))
+        colnames = sorted(added_query_fields | requested_columns)
 
         data_query_time = self._data_query_time
         data_query_tz = self._data_query_tz
@@ -1078,7 +1104,13 @@ class BlazeLoader(dict):
             materialized_deltas,
             dates,
         )
-        sparse_output.drop(AD_FIELD_NAME, axis=1, inplace=True)
+        # If we ever have cases where we find out about multiple asof_dates'
+        # data on the same TS, we want to make sure that last_in_date_group
+        # selects the correct last asof_date's value.
+        sparse_output.sort_values(AD_FIELD_NAME, inplace=True)
+        non_novel_deltas.sort_values(AD_FIELD_NAME, inplace=True)
+        if AD_FIELD_NAME not in requested_columns:
+            sparse_output.drop(AD_FIELD_NAME, axis=1, inplace=True)
 
         sparse_deltas = last_in_date_group(non_novel_deltas,
                                            dates,
@@ -1092,15 +1124,22 @@ class BlazeLoader(dict):
                                           have_sids=have_sids)
         ffill_across_cols(dense_output, columns, {c.name: c.name
                                                   for c in columns})
+
+        # By default, no non-novel deltas are applied.
+        def no_adjustments_from_deltas(*args):
+            return {}
+
+        adjustments_from_deltas = no_adjustments_from_deltas
         if have_sids:
-            adjustments_from_deltas = adjustments_from_deltas_with_sids
+            if apply_deltas_adjustments:
+                adjustments_from_deltas = adjustments_from_deltas_with_sids
             column_view = identity
         else:
             # If we do not have sids, use the column view to make a single
             # column vector which is unassociated with any assets.
             column_view = op.itemgetter(np.s_[:, np.newaxis])
-
-            adjustments_from_deltas = adjustments_from_deltas_no_sids
+            if apply_deltas_adjustments:
+                adjustments_from_deltas = adjustments_from_deltas_no_sids
             mask = np.full(
                 shape=(len(mask), 1), fill_value=True, dtype=bool_dtype,
             )

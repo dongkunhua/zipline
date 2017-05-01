@@ -11,9 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from abc import ABCMeta, abstractmethod
 import json
 import os
-import shutil
 from glob import glob
 from os.path import join
 from textwrap import dedent
@@ -25,6 +25,9 @@ from intervaltree import IntervalTree
 import logbook
 import numpy as np
 import pandas as pd
+from pandas import HDFStore
+import tables
+from six import with_metaclass
 from toolz import keymap, valmap
 
 from zipline.data._minute_bar_internal import (
@@ -36,6 +39,7 @@ from zipline.data._minute_bar_internal import (
 from zipline.gens.sim_engine import NANOS_IN_MINUTE
 
 from zipline.data.bar_reader import BarReader, NoDataOnDate
+from zipline.data.us_equity_pricing import check_uint32_safe
 from zipline.utils.calendars import get_calendar
 from zipline.utils.cli import maybe_show_progress
 from zipline.utils.memoize import lazyval
@@ -107,6 +111,73 @@ def _sid_subdir_path(sid):
         padded_sid[2:4],
         "{0}.bcolz".format(str(padded_sid))
     )
+
+
+def convert_cols(cols, scale_factor, sid, invalid_data_behavior):
+    """Adapt OHLCV columns into uint32 columns.
+
+    Parameters
+    ----------
+    cols : dict
+        A dict mapping each column name (open, high, low, close, volume)
+        to a float column to convert to uint32.
+    scale_factor : int
+        Factor to use to scale float values before converting to uint32.
+    sid : int
+        Sid of the relevant asset, for logging.
+    invalid_data_behavior : str
+        Specifies behavior when data cannot be converted to uint32.
+        If 'raise', raises an exception.
+        If 'warn', logs a warning and filters out incompatible values.
+        If 'ignore', silently filters out incompatible values.
+    """
+    scaled_opens = np.nan_to_num(cols['open']) * scale_factor
+    scaled_highs = np.nan_to_num(cols['high']) * scale_factor
+    scaled_lows = np.nan_to_num(cols['low']) * scale_factor
+    scaled_closes = np.nan_to_num(cols['close']) * scale_factor
+
+    exclude_mask = np.zeros_like(scaled_opens, dtype=bool)
+
+    for col_name, scaled_col in [
+        ('open', scaled_opens),
+        ('high', scaled_highs),
+        ('low', scaled_lows),
+        ('close', scaled_closes),
+    ]:
+        max_val = scaled_col.max()
+
+        try:
+            check_uint32_safe(max_val, col_name)
+        except ValueError:
+            if invalid_data_behavior == 'raise':
+                raise
+
+            if invalid_data_behavior == 'warn':
+                logger.warn(
+                    'Values for sid={}, col={} contain some too large for '
+                    'uint32 (max={}), filtering them out',
+                    sid, col_name, max_val,
+                )
+
+            # We want to exclude all rows that have an unsafe value in
+            # this column.
+            exclude_mask &= (scaled_col >= np.iinfo(np.uint32).max)
+
+    # Convert all cols to uint32.
+    opens = scaled_opens.astype(np.uint32)
+    highs = scaled_highs.astype(np.uint32)
+    lows = scaled_lows.astype(np.uint32)
+    closes = scaled_closes.astype(np.uint32)
+    volumes = cols['volume'].astype(np.uint32)
+
+    # Exclude rows with unsafe values by setting to zero.
+    opens[exclude_mask] = 0
+    highs[exclude_mask] = 0
+    lows[exclude_mask] = 0
+    closes[exclude_mask] = 0
+    volumes[exclude_mask] = 0
+
+    return opens, highs, lows, closes, volumes
 
 
 class BcolzMinuteBarMetadata(object):
@@ -407,6 +478,28 @@ class BcolzMinuteBarWriter(object):
             )
             metadata.write(self._rootdir)
 
+    @classmethod
+    def open(cls, rootdir, end_session=None):
+        """
+        Open an existing ``rootdir`` for writing.
+
+        Parameters
+        ----------
+        end_session : Timestamp (optional)
+            When appending, the intended new ``end_session``.
+        """
+        metadata = BcolzMinuteBarMetadata.read(rootdir)
+        return BcolzMinuteBarWriter(
+            rootdir,
+            metadata.calendar,
+            metadata.start_session,
+            end_session if end_session is not None else metadata.end_session,
+            metadata.minutes_per_day,
+            metadata.default_ohlc_ratio,
+            metadata.ohlc_ratios_per_sid,
+            write_metadata=end_session is not None
+        )
+
     @property
     def first_trading_day(self):
         return self._start_session
@@ -456,7 +549,9 @@ class BcolzMinuteBarWriter(object):
         with open(sizes_path, mode='r') as f:
             sizes = f.read()
         data = json.loads(sizes)
-        num_days = data['shape'][0] / self._minutes_per_day
+        # use integer division so that the result is an int
+        # for pandas index later https://github.com/pandas-dev/pandas/blob/master/pandas/tseries/base.py#L247 # noqa
+        num_days = data['shape'][0] // self._minutes_per_day
         if num_days == 0:
             # empty container
             return pd.NaT
@@ -570,7 +665,7 @@ class BcolzMinuteBarWriter(object):
         for k, v in kwargs.items():
             table.attrs[k] = v
 
-    def write(self, data, show_progress=False):
+    def write(self, data, show_progress=False, invalid_data_behavior='warn'):
         """Write a stream of minute data.
 
         Parameters
@@ -599,9 +694,9 @@ class BcolzMinuteBarWriter(object):
         write_sid = self.write_sid
         with ctx as it:
             for e in it:
-                write_sid(*e)
+                write_sid(*e, invalid_data_behavior=invalid_data_behavior)
 
-    def write_sid(self, sid, df):
+    def write_sid(self, sid, df, invalid_data_behavior='warn'):
         """
         Write the OHLCV data for the given sid.
         If there is no bcolz ctable yet created for the sid, create it.
@@ -632,9 +727,9 @@ class BcolzMinuteBarWriter(object):
         dts = df.index.values
         # Call internal method, since DataFrame has already ensured matching
         # index and value lengths.
-        self._write_cols(sid, dts, cols)
+        self._write_cols(sid, dts, cols, invalid_data_behavior)
 
-    def write_cols(self, sid, dts, cols):
+    def write_cols(self, sid, dts, cols, invalid_data_behavior='warn'):
         """
         Write the OHLCV data for the given sid.
         If there is no bcolz ctable yet created for the sid, create it.
@@ -662,9 +757,9 @@ class BcolzMinuteBarWriter(object):
                     len(dts),
                     " ".join("{0}={1}".format(name, len(cols[name]))
                              for name in self.COL_NAMES)))
-        self._write_cols(sid, dts, cols)
+        self._write_cols(sid, dts, cols, invalid_data_behavior)
 
-    def _write_cols(self, sid, dts, cols):
+    def _write_cols(self, sid, dts, cols, invalid_data_behavior):
         """
         Internal method for `write_cols` and `write`.
 
@@ -687,7 +782,7 @@ class BcolzMinuteBarWriter(object):
 
         tds = self._session_labels
         input_first_day = self._calendar.minute_to_session_label(
-            pd.Timestamp(dts[0]))
+            pd.Timestamp(dts[0]), direction='previous')
 
         last_date = self.last_date_in_output_for_sid(sid)
 
@@ -731,16 +826,13 @@ class BcolzMinuteBarWriter(object):
 
         ohlc_ratio = self.ohlc_ratio_for_sid(sid)
 
-        def convert_col(col):
-            """Adapt float column into a uint32 column.
-            """
-            return (np.nan_to_num(col) * ohlc_ratio).astype(np.uint32)
-
-        open_col[dt_ixs] = convert_col(cols['open'])
-        high_col[dt_ixs] = convert_col(cols['high'])
-        low_col[dt_ixs] = convert_col(cols['low'])
-        close_col[dt_ixs] = convert_col(cols['close'])
-        vol_col[dt_ixs] = cols['volume'].astype(np.uint32)
+        (
+            open_col[dt_ixs],
+            high_col[dt_ixs],
+            low_col[dt_ixs],
+            close_col[dt_ixs],
+            vol_col[dt_ixs],
+        ) = convert_cols(cols, ohlc_ratio, sid, invalid_data_behavior)
 
         table.append([
             open_col,
@@ -766,7 +858,7 @@ class BcolzMinuteBarWriter(object):
         truncate_slice_end = self.data_len_for_day(date)
 
         glob_path = os.path.join(self._rootdir, "*", "*", "*.bcolz")
-        sid_paths = glob(glob_path)
+        sid_paths = sorted(glob(glob_path))
 
         for sid_path in sid_paths:
             file_name = os.path.basename(sid_path)
@@ -780,26 +872,10 @@ class BcolzMinuteBarWriter(object):
                 continue
 
             logger.info(
-                "Truncting {0} back at end_date={1}", file_name, date.date()
+                "Truncating {0} at end_date={1}", file_name, date.date()
             )
 
-            new_table = table[:truncate_slice_end]
-            tmp_path = sid_path + '.bak'
-            shutil.move(sid_path, tmp_path)
-            try:
-                bcolz.ctable(new_table, rootdir=sid_path)
-                try:
-                    shutil.rmtree(tmp_path)
-                except Exception as err:
-                    logger.info(
-                        "Could not delete tmp_path={0}, err={1}", tmp_path, err
-                    )
-            except Exception as err:
-                # On any ctable write error, restore the original table.
-                logger.warn(
-                    "Could not write {0}, err={1}", file_name, err
-                )
-                shutil.move(tmp_path, sid_path)
+            table.resize(truncate_slice_end)
 
         # Update end session in metadata.
         metadata = BcolzMinuteBarMetadata.read(self._rootdir)
@@ -1194,3 +1270,92 @@ class BcolzMinuteBarReader(MinuteBarReader):
 
             results.append(out)
         return results
+
+
+class MinuteBarUpdateReader(with_metaclass(ABCMeta, object)):
+    """
+    Abstract base class for minute update readers.
+    """
+
+    @abstractmethod
+    def read(self, dts, sids):
+        """
+        Read and return pricing update data.
+
+        Parameters
+        ----------
+        dts : DatetimeIndex
+            The minutes for which to read the pricing updates.
+        sids : iter[int]
+            The sids for which to read the pricing updates.
+
+        Returns
+        -------
+        data : iter[(int, DataFrame)]
+            Returns an iterable of ``sid`` to the corresponding OHLCV data.
+        """
+        raise NotImplementedError()
+
+
+class H5MinuteBarUpdateWriter(object):
+    """
+    Writer for files containing minute bar updates for consumption by a writer
+    for a ``MinuteBarReader`` format.
+
+    Parameters
+    ----------
+    path : str
+        The destination path.
+    complevel : int, optional
+        The HDF5 complevel, defaults to ``5``.
+    complib : str, optional
+        The HDF5 complib, defaults to ``zlib``.
+    """
+
+    FORMAT_VERSION = 0
+
+    _COMPLEVEL = 5
+    _COMPLIB = 'zlib'
+
+    def __init__(self, path, complevel=None, complib=None):
+        self._complevel = complevel if complevel \
+            is not None else self._COMPLEVEL
+        self._complib = complib if complib \
+            is not None else self._COMPLIB
+        self._path = path
+
+    def write(self, frames):
+        """
+        Write the frames to the target HDF5 file, using the format used by
+        ``pd.Panel.to_hdf``
+
+        Parameters
+        ----------
+        frames : iter[(int, DataFrame)] or dict[int -> DataFrame]
+            An iterable or other mapping of sid to the corresponding OHLCV
+            pricing data.
+        """
+        with HDFStore(self._path, 'w',
+                      complevel=self._complevel, complib=self._complib) \
+                as store:
+            panel = pd.Panel.from_dict(dict(frames))
+            panel.to_hdf(store, 'updates')
+        with tables.open_file(self._path, mode='r+') as h5file:
+            h5file.set_node_attr('/', 'version', 0)
+
+
+class H5MinuteBarUpdateReader(MinuteBarUpdateReader):
+    """
+    Reader for minute bar updates stored in HDF5 files.
+
+    Parameters
+    ----------
+    path : str
+        The path of the HDF5 file from which to source data.
+    """
+    def __init__(self, path):
+        self._panel = pd.read_hdf(path)
+
+    def read(self, dts, sids):
+        panel = self._panel[sids, dts, :]
+        return panel.iteritems()

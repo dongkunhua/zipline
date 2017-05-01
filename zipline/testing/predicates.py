@@ -29,7 +29,6 @@ from nose.tools import (  # noqa
     assert_raises,
     assert_raises_regexp,
     assert_regexp_matches,
-    assert_sequence_equal,
     assert_true,
     assert_tuple_equal,
 )
@@ -39,6 +38,7 @@ from pandas.util.testing import (
     assert_frame_equal,
     assert_panel_equal,
     assert_series_equal,
+    assert_index_equal,
 )
 from six import iteritems, viewkeys, PY2
 from toolz import dissoc, keyfilter
@@ -47,6 +47,7 @@ import toolz.curried.operator as op
 from zipline.testing.core import ensure_doctest
 from zipline.dispatch import dispatch
 from zipline.lib.adjustment import Adjustment
+from zipline.lib.labelarray import LabelArray
 from zipline.utils.functional import dzip_exact, instance
 from zipline.utils.math_utils import tolerant_equals
 
@@ -369,12 +370,14 @@ def assert_dict_equal(result, expected, path=(), msg='', **kwargs):
 
 
 @assert_equal.register(list, list)
-def assert_list_equal(result, expected, path=(), msg='', **kwargs):
+@assert_equal.register(tuple, tuple)
+def assert_sequence_equal(result, expected, path=(), msg='', **kwargs):
     result_len = len(result)
     expected_len = len(expected)
     assert result_len == expected_len, (
-        '%slist lengths do not match: %d != %d\n%s' % (
+        '%s%s lengths do not match: %d != %d\n%s' % (
             _fmt_msg(msg),
+            type(result).__name__,
             result_len,
             expected_len,
             _fmt_path(path),
@@ -425,7 +428,23 @@ def assert_array_equal(result,
         raise AssertionError('\n'.join((str(e), _fmt_path(path))))
 
 
-def _register_assert_ndframe_equal(type_, assert_eq):
+@assert_equal.register(LabelArray, LabelArray)
+def assert_labelarray_equal(result, expected, path=(), **kwargs):
+    assert_equal(
+        result.categories,
+        expected.categories,
+        path=path + ('.categories',),
+        **kwargs
+    )
+    assert_equal(
+        result.as_int_array(),
+        expected.as_int_array(),
+        path=path + ('.as_int_array()',),
+        **kwargs
+    )
+
+
+def _register_assert_equal_wrapper(type_, assert_eq):
     """Register a new check for an ndframe object.
 
     Parameters
@@ -456,18 +475,40 @@ def _register_assert_ndframe_equal(type_, assert_eq):
     return assert_ndframe_equal
 
 
-assert_frame_equal = _register_assert_ndframe_equal(
+assert_frame_equal = _register_assert_equal_wrapper(
     pd.DataFrame,
     assert_frame_equal,
 )
-assert_panel_equal = _register_assert_ndframe_equal(
+assert_panel_equal = _register_assert_equal_wrapper(
     pd.Panel,
     assert_panel_equal,
 )
-assert_series_equal = _register_assert_ndframe_equal(
+assert_series_equal = _register_assert_equal_wrapper(
     pd.Series,
     assert_series_equal,
 )
+assert_index_equal = _register_assert_equal_wrapper(
+    pd.Index,
+    assert_index_equal,
+)
+
+
+@assert_equal.register(pd.Categorical, pd.Categorical)
+def assert_categorical_equal(result, expected, path=(), msg='', **kwargs):
+    assert_equal(
+        result.categories,
+        expected.categories,
+        path=path + ('.categories',),
+        msg=msg,
+        **kwargs
+    )
+    assert_equal(
+        result.codes,
+        expected.codes,
+        path=path + ('.codes',),
+        msg=msg,
+        **kwargs
+    )
 
 
 @assert_equal.register(Adjustment, Adjustment)

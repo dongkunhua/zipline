@@ -21,8 +21,10 @@ from numpy import (
     where,
 )
 from numpy.random import randn, seed
+import pandas as pd
+from scipy.stats.mstats import winsorize as scipy_winsorize
 
-from zipline.errors import UnknownRankMethod
+from zipline.errors import BadPercentileBounds, UnknownRankMethod
 from zipline.lib.labelarray import LabelArray
 from zipline.lib.rank import masked_rankdata_2d
 from zipline.lib.normalize import naive_grouped_rowwise_apply as grouped_apply
@@ -37,6 +39,8 @@ from zipline.testing import (
     parameter_space,
     permute_rows,
 )
+from zipline.testing.fixtures import ZiplineTestCase
+from zipline.testing.predicates import assert_equal
 from zipline.utils.numpy_utils import (
     categorical_dtype,
     datetime64ns_dtype,
@@ -706,11 +710,157 @@ class FactorTestCase(BasePipelineTestCase):
             check=partial(check_allclose, atol=0.001),
         )
 
+    def test_winsorize_hand_computed(self):
+        """
+        Test the hand-computed example in factor.winsorize.
+        """
+        f = self.f
+        m = Mask()
+        c = C()
+        str_c = C(dtype=categorical_dtype, missing_value=None)
+
+        factor_data = array([
+            [1.,     2.,  3.,  4.,   5.,   6.],
+            [1.,     8., 27., 64., 125., 216.],
+            [6.,     5.,  4.,  3.,   2.,   1.]
+        ])
+        filter_data = array(
+            [[False, True, True, True, True, True],
+             [True, False, True, True, True, True],
+             [True, True, False, True, True, True]],
+            dtype=bool,
+        )
+        classifier_data = array(
+            [[1, 1, 1, 2, 2, 2],
+             [1, 1, 1, 2, 2, 2],
+             [1, 1, 1, 2, 2, 2]],
+            dtype=int64_dtype,
+        )
+        string_classifier_data = LabelArray(
+            classifier_data.astype(str).astype(object),
+            missing_value=None,
+        )
+
+        terms = {
+            'winsor_1': f.winsorize(
+                min_percentile=0.33,
+                max_percentile=0.67
+            ),
+            'winsor_2': f.winsorize(
+                min_percentile=0.49,
+                max_percentile=1
+            ),
+            'winsor_3': f.winsorize(
+                min_percentile=0,
+                max_percentile=.67
+            ),
+            'masked': f.winsorize(
+                min_percentile=0.33,
+                max_percentile=0.67,
+                mask=m
+            ),
+            'grouped': f.winsorize(
+                min_percentile=0.34,
+                max_percentile=0.66,
+                groupby=c
+            ),
+            'grouped_str': f.winsorize(
+                min_percentile=0.34,
+                max_percentile=0.66,
+                groupby=str_c
+            ),
+            'grouped_masked': f.winsorize(
+                min_percentile=0.34,
+                max_percentile=0.66,
+                mask=m,
+                groupby=c
+            ),
+            'grouped_masked_str': f.winsorize(
+                min_percentile=0.34,
+                max_percentile=0.66,
+                mask=m,
+                groupby=str_c
+            ),
+        }
+        expected = {
+            'winsor_1': array([
+                [2.,    2.,    3.,    4.,    5.,    5.],
+                [8.,    8.,   27.,   64.,  125.,  125.],
+                [5.,    5.,    4.,    3.,    2.,    2.]
+            ]),
+            'winsor_2': array([
+                [3.0,    3.,    3.,    4.,    5.,    6.],
+                [27.,   27.,   27.,   64.,  125.,  216.],
+                [6.0,    5.,    4.,    3.,    3.,    3.]
+            ]),
+            'winsor_3': array([
+                [1.,    2.,    3.,    4.,    5.,    5.],
+                [1.,    8.,   27.,   64.,  125.,  125.],
+                [5.,    5.,    4.,    3.,    2.,    1.]
+            ]),
+            'masked': array([
+                [nan,    3.,    3.,    4.,    5.,    5.],
+                [27.,   nan,   27.,   64.,  125.,  125.],
+                [5.0,    5.,    nan,    3.,    2.,   2.]
+            ]),
+            'grouped': array([
+                [2.,    2.,    2.,    5.,    5.,    5.],
+                [8.,    8.,    8.,  125.,  125.,  125.],
+                [5.,    5.,    5.,    2.,    2.,    2.]
+            ]),
+            'grouped_masked': array([
+                [nan,    2.,    3.,    5.,    5.,    5.],
+                [1.0,   nan,   27.,  125.,  125.,  125.],
+                [6.0,    5.,    nan,    2.,    2.,   2.]
+            ]),
+        }
+        # Changing the classifier dtype shouldn't affect anything.
+        expected['grouped_str'] = expected['grouped']
+        expected['grouped_masked_str'] = expected['grouped_masked']
+
+        self.check_terms(
+            terms,
+            expected,
+            initial_workspace={
+                f: factor_data,
+                c: classifier_data,
+                str_c: string_classifier_data,
+                m: filter_data,
+            },
+            mask=self.build_mask(self.ones_mask(shape=factor_data.shape)),
+            check=partial(check_allclose, atol=0.001),
+        )
+
+    def test_winsorize_bad_bounds(self):
+        """
+        Test out of bounds input for factor.winsorize.
+        """
+        f = self.f
+
+        bad_percentiles = [
+            (-.1, 1),
+            (0, 95),
+            (5, 95),
+            (5, 5),
+            (.6, .4)
+        ]
+        for min_, max_ in bad_percentiles:
+            with self.assertRaises(BadPercentileBounds):
+                f.winsorize(min_percentile=min_, max_percentile=max_)
+
     @parameter_space(
         seed_value=range(1, 2),
         normalizer_name_and_func=[
-            ('demean', lambda row: row - nanmean(row)),
-            ('zscore', lambda row: (row - nanmean(row)) / nanstd(row)),
+            ('demean', {}, lambda row: row - nanmean(row)),
+            ('zscore', {}, lambda row: (row - nanmean(row)) / nanstd(row)),
+            (
+                'winsorize',
+                {"min_percentile": 0.25, "max_percentile": 0.75},
+                lambda row: scipy_winsorize(
+                    row,
+                    limits=0.25,
+                )
+            ),
         ],
         add_nulls_to_factor=(False, True,),
     )
@@ -719,9 +869,9 @@ class FactorTestCase(BasePipelineTestCase):
                                        normalizer_name_and_func,
                                        add_nulls_to_factor):
 
-        name, func = normalizer_name_and_func
+        name, kwargs, func = normalizer_name_and_func
 
-        shape = (7, 7)
+        shape = (20, 20)
 
         # All Trues.
         nomask = self.ones_mask(shape=shape)
@@ -752,7 +902,7 @@ class FactorTestCase(BasePipelineTestCase):
         c = C()
         c_with_nulls = OtherC()
         m = Mask()
-        method = getattr(f, name)
+        method = partial(getattr(f, name), **kwargs)
         terms = {
             'vanilla': method(),
             'masked': method(mask=m),
@@ -1048,6 +1198,10 @@ class ShortReprTestCase(TestCase):
         r = F().zscore().short_repr()
         self.assertEqual(r, "GroupedRowTransform('zscore')")
 
+    def test_winsorize(self):
+        r = F().winsorize(min_percentile=.05, max_percentile=.95).short_repr()
+        self.assertEqual(r, "GroupedRowTransform('winsorize')")
+
 
 class TestWindowSafety(TestCase):
 
@@ -1058,3 +1212,56 @@ class TestWindowSafety(TestCase):
         self.assertFalse(F().demean().window_safe)
         self.assertFalse(F(window_safe=False).demean().window_safe)
         self.assertTrue(F(window_safe=True).demean().window_safe)
+
+    def test_winsorize_is_window_safe_if_input_is_window_safe(self):
+        self.assertFalse(
+            F().winsorize(min_percentile=.05, max_percentile=.95).window_safe
+        )
+        self.assertFalse(
+            F(window_safe=False).winsorize(
+                min_percentile=.05,
+                max_percentile=.95
+            ).window_safe
+        )
+        self.assertTrue(
+            F(window_safe=True).winsorize(
+                min_percentile=.05,
+                max_percentile=.95
+            ).window_safe
+        )
+
+
+class TestPostProcessAndToWorkSpaceValue(ZiplineTestCase):
+    @parameter_space(dtype_=(float64_dtype, datetime64ns_dtype))
+    def test_reversability(self, dtype_):
+        class F(Factor):
+            inputs = ()
+            dtype = dtype_
+            window_length = 0
+
+        f = F()
+        column_data = array(
+            [[0, f.missing_value],
+             [1, f.missing_value],
+             [2, 3]],
+            dtype=dtype_,
+        )
+
+        assert_equal(f.postprocess(column_data.ravel()), column_data.ravel())
+
+        # only include the non-missing data
+        pipeline_output = pd.Series(
+            data=array([0, 1, 2, 3], dtype=dtype_),
+            index=pd.MultiIndex.from_arrays([
+                [pd.Timestamp('2014-01-01'),
+                 pd.Timestamp('2014-01-02'),
+                 pd.Timestamp('2014-01-03'),
+                 pd.Timestamp('2014-01-03')],
+                [0, 0, 0, 1],
+            ]),
+        )
+
+        assert_equal(
+            f.to_workspace_value(pipeline_output, pd.Index([0, 1])),
+            column_data,
+        )
