@@ -66,16 +66,16 @@ class SHExchangeCalendar(TradingCalendar):
 
     @property
     def adhoc_holidays(self):
-        # ts = DataReader("000001.SS", "yahoo", start_default, end_default).index
-        from net.RPCClient import request
-        data = request(
-            "123.56.77.52:10030",
-            "Tdays",
-            {}
-        )
-        ts = pd.Series(pd.to_datetime(data)).sort_index()
-        ts.name = "Date"
-        ts = pd.DatetimeIndex(ts)
+        ts = DataReader("000001.SS", "yahoo", start_default, end_default).index
+        # from net.RPCClient import request
+        # data = request(
+        #     "123.56.77.52:10030",
+        #     "Tdays",
+        #     {}
+        # )
+        # ts = pd.Series(pd.to_datetime(data)).sort_index()
+        # ts.name = "Date"
+        # ts = pd.DatetimeIndex(ts)
         # print ts
         ts1 = pd.bdate_range(start=ts[0], end=ts[-1]).tz_localize("UTC")
         sh_holidays = []

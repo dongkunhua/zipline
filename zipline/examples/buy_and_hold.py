@@ -28,11 +28,11 @@ def handle_data(context, data):
     print context.datetime.tz_convert(pytz.timezone("Asia/Shanghai"))
     import pandas as pd
 
-    print data.history(symbols("000001.SZ"), ["price","volume"], 10,
-                       '1d').iloc[:,1]
-    print data.history(symbols("000002.SZ"), "price", 2, '1m').iloc[0]
+    # print data.history(symbols("000001.SZ"), ["price","volume"], 10,
+    #                    '1d').iloc[:,1]
+    # print data.history(symbols("000002.SZ"), "price", 2, '1m').iloc[0]
     print data.history(symbols("600000.SH"), "close", 1, '1d')
-    print data.current(symbol("000001.SZ"), 'price')
+    # print data.current(symbol("000001.SZ"), 'price')
 
 
 def _test_args():
