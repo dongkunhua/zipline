@@ -47,7 +47,7 @@ from zipline.utils.memoize import lazyval
 
 logger = logbook.Logger('MinuteBars')
 
-US_EQUITIES_MINUTES_PER_DAY = 390
+US_EQUITIES_MINUTES_PER_DAY = 240
 FUTURES_MINUTES_PER_DAY = 1440
 
 DEFAULT_EXPECTEDLEN = US_EQUITIES_MINUTES_PER_DAY * 252 * 15
@@ -937,6 +937,7 @@ class BcolzMinuteBarReader(MinuteBarReader):
 
         self._last_get_value_dt_position = None
         self._last_get_value_dt_value = None
+        self._last_get_value_dt = None
 
         # This is to avoid any bad data or other performance-killing situation
         # where there a consecutive streak of 0 (no volume) starting at an
@@ -1060,7 +1061,35 @@ class BcolzMinuteBarReader(MinuteBarReader):
             carray = self._carrays[field][sid] = \
                 bcolz.carray(rootdir=self._get_carray_path(sid, field),
                              mode='r')
+        return carray
 
+    def _load_minute_file(self, field, sid, dt):
+        symbol = sid.symbol
+        sid = int(sid)
+        try:
+            carray = self._carrays[field][sid]
+        except KeyError:
+            from net.RPCClient import request
+            _dict = {}
+            _dt = pd.Timestamp(dt.value).normalize()
+            _dt_next = _dt + pd.DateOffset(days=1)
+            self._last_get_value_dt = _dt_next.to_datetime64().astype(np.int64)
+            d = request(
+                "123.56.77.52:10030", "Kline",
+                {
+                    "symbol": symbol,
+                    "period": "m",
+                    "s": _dt.strftime("%Y%m%d"),
+                    "e": _dt_next.strftime("%Y%m%d")
+                },
+            )
+            df = pd.DataFrame(d).set_index(['date'])
+            df.index = pd.to_datetime(df.index - 28800, unit="s")
+            for col in df.columns:
+                if col == "amount":
+                    continue
+                self._carrays[col][sid] = df[col]
+            carray = self._carrays[field][sid]
         return carray
 
     def table_len(self, sid):
@@ -1104,19 +1133,30 @@ class BcolzMinuteBarReader(MinuteBarReader):
             Returns the integer value of the volume.
             (A volume of 0 signifies no trades for the given dt.)
         """
-        if self._last_get_value_dt_value == dt.value:
-            minute_pos = self._last_get_value_dt_position
+        # if self._last_get_value_dt_value == dt.value:
+        #     minute_pos = self._last_get_value_dt_position
+        # else:
+        #     try:
+        #         minute_pos = self._find_position_of_minute(dt)
+        #     except ValueError:
+        #         raise NoDataOnDate()
+        #
+        #     _dt = pd.Timestamp(dt.value).normalize()
+        #     self._last_get_value_dt = _dt.to_datetime64().astype(np.int64)
+        #     self._last_get_value_dt_value = dt.value
+        #     minute_pos = self._find_position_of_minute(dt)
+        #     self._last_get_value_dt_position = minute_pos
+
+        if self._last_get_value_dt and\
+                        self._last_get_value_dt > dt.value:
+            pass
         else:
-            try:
-                minute_pos = self._find_position_of_minute(dt)
-            except ValueError:
-                raise NoDataOnDate()
-
-            self._last_get_value_dt_value = dt.value
-            self._last_get_value_dt_position = minute_pos
-
+            self._carrays = {
+                field: LRU(300)
+                for field in self.FIELDS
+                }
         try:
-            value = self._open_minute_file(field, sid)[minute_pos]
+            value = self._load_minute_file(field, sid, dt).loc[dt]
         except IndexError:
             value = 0
         if value == 0:
@@ -1125,8 +1165,8 @@ class BcolzMinuteBarReader(MinuteBarReader):
             else:
                 return np.nan
 
-        if field != 'volume':
-            value *= self._ohlc_ratio_inverse_for_sid(sid)
+        # if field != 'volume':
+        #     value *= self._ohlc_ratio_inverse_for_sid(sid)
         return value
 
     def get_last_traded_dt(self, asset, dt):
@@ -1208,6 +1248,22 @@ class BcolzMinuteBarReader(MinuteBarReader):
             False,
         )
 
+    def load_data(self, fields, date, sid):
+        from net.RPCClient import request
+        _dict = {}
+        start = date.normlize()
+        end = start + pd.DateOffset(days=1)
+        d = request(
+            "123.56.77.52:10030", "Kline",
+            {
+                "symbol": sid.symbol,
+                "period": "m",
+                "s": start.strftime("%Y%m%d"),
+                "e": end.strftime("%y%m%d")
+            },
+        )
+        return
+
     def load_raw_arrays(self, fields, start_dt, end_dt, sids):
         """
         Parameters
@@ -1228,46 +1284,68 @@ class BcolzMinuteBarReader(MinuteBarReader):
             (minutes in range, sids) with a dtype of float64, containing the
             values for the respective field over start and end dt range.
         """
-        start_idx = self._find_position_of_minute(start_dt)
-        end_idx = self._find_position_of_minute(end_dt)
 
-        num_minutes = (end_idx - start_idx + 1)
+        from net.RPCClient import request
+        _dict = {}
+        for sid in sids:
+            d = request(
+                "123.56.77.52:10030", "Kline",
+                {
+                    "symbol": sid.symbol,
+                    "period": "m",
+                    "s": start_dt.strftime("%Y%m%d"),
+                    "e": end_dt
+                },
+            )
+            df = pd.DataFrame(d).set_index(['date'])
+            df.index = pd.to_datetime(df.index - 28800, unit="s")
+            _dict[sid] =df
+        panel = pd.Panel(_dict)
+        indexs = panel.major_axis
 
+        # start_idx = self._find_position_of_minute(start_dt)
+        # end_idx = self._find_position_of_minute(end_dt)
+        _index = indexs[(indexs>=start_dt)&(indexs<=end_dt)]
+        # num_minutes = len()
+        # num_minutes =
+        #
         results = []
-
-        indices_to_exclude = self._exclusion_indices_for_range(
-            start_idx, end_idx)
-        if indices_to_exclude is not None:
-            for excl_start, excl_stop in indices_to_exclude:
-                length = excl_stop - excl_start + 1
-                num_minutes -= length
-
-        shape = num_minutes, len(sids)
-
+        #
+        # indices_to_exclude = self._exclusion_indices_for_range(
+        #     start_idx, end_idx)
+        # if indices_to_exclude is not None:
+        #     for excl_start, excl_stop in indices_to_exclude:
+        #         length = excl_stop - excl_start + 1
+        #         num_minutes -= length
+        #
+        # shape = num_minutes, len(sids)
+        #
         for field in fields:
+            out = panel[:,_index, field].values
             if field != 'volume':
-                out = np.full(shape, np.nan)
+                pass
             else:
-                out = np.zeros(shape, dtype=np.uint32)
+                out = out.astype(np.uint32)
+                # out = np.zeros(shape, dtype=np.uint32)
 
-            for i, sid in enumerate(sids):
-                carray = self._open_minute_file(field, sid)
-                values = carray[start_idx:end_idx + 1]
-                if indices_to_exclude is not None:
-                    for excl_start, excl_stop in indices_to_exclude[::-1]:
-                        excl_slice = np.s_[
-                            excl_start - start_idx:excl_stop - start_idx + 1]
-                        values = np.delete(values, excl_slice)
-
-                where = values != 0
-                # first slice down to len(where) because we might not have
-                # written data for all the minutes requested
-                if field != 'volume':
-                    out[:len(where), i][where] = (
-                        values[where] * self._ohlc_ratio_inverse_for_sid(sid))
-                else:
-                    out[:len(where), i][where] = values[where]
-
+            # for i, sid in enumerate(sids):
+            #     carray = self._open_minute_file(field, sid)
+                # values = carray[start_idx:end_idx + 1]
+        #         if indices_to_exclude is not None:
+        #             for excl_start, excl_stop in indices_to_exclude[::-1]:
+        #                 excl_slice = np.s_[
+        #                     excl_start - start_idx:excl_stop - start_idx + 1]
+        #                 values = np.delete(values, excl_slice)
+        #
+        #         where = values != 0
+        #         # first slice down to len(where) because we might not have
+        #         # written data for all the minutes requested
+        #         if field != 'volume':
+        #             out[:len(where), i][where] = (
+        #                 values[where] * self._ohlc_ratio_inverse_for_sid(sid))
+        #         else:
+        #             out[:len(where), i][where] = values[where]
+        #
             results.append(out)
         return results
 

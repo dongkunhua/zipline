@@ -215,7 +215,7 @@ register(
     'hs300',
     hs300_equities(
     ),
-
+    "SH"
 )
 #
 register_calendar_alias("hs300", "SH")

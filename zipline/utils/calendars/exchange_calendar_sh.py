@@ -17,7 +17,7 @@ from pandas import (
 
 import zipline
 from zipline.utils.calendars.trading_calendar import TradingCalendar, \
-    HolidayCalendar, remember_last, NANOS_IN_MINUTE
+    HolidayCalendar, NANOS_IN_MINUTE, lazyval
 
 
 start_default = pd.Timestamp('1990-12-19', tz="UTC")
@@ -70,14 +70,12 @@ class SHExchangeCalendar(TradingCalendar):
         from net.RPCClient import request
         data = request(
             "123.56.77.52:10030",
-            "Kline", {
-                "symbol": "000001.SH",
-            }
+            "Tdays",
+            {}
         )
-
-        df = pd.DataFrame(data).sort_index()
-        df.index.name = "Date"
-        ts = pd.DatetimeIndex(df.index)
+        ts = pd.Series(pd.to_datetime(data)).sort_index()
+        ts.name = "Date"
+        ts = pd.DatetimeIndex(ts)
         # print ts
         ts1 = pd.bdate_range(start=ts[0], end=ts[-1]).tz_localize("UTC")
         sh_holidays = []
@@ -98,9 +96,7 @@ class SHExchangeCalendar(TradingCalendar):
         return [
         ]
 
-
-    @property
-    @remember_last
+    @lazyval
     def all_minutes(self):
         """
         Returns a DatetimeIndex representing all the minutes in this calendar.
