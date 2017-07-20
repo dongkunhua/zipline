@@ -61,8 +61,6 @@ def hs300_equities(symbols=None, start=None, end=None):
         symbols = get_sector("000300.SH")
 
     symbols = tuple(symbols)
-    trading_days = get_calendar('SH').all_sessions
-    trading_days = trading_days.astype("datetime64[ns]")
 
     def ingest(environ,
                asset_db_writer,
@@ -90,6 +88,8 @@ def hs300_equities(symbols=None, start=None, end=None):
             ('symbol', 'object'),
         ]))
 
+        trading_days = get_calendar('SH').all_sessions
+        trading_days = trading_days.astype("datetime64[ns]")
 
         def _pricing_iter():
             sid = 0
@@ -123,7 +123,6 @@ def hs300_equities(symbols=None, start=None, end=None):
                     df = df[df.Volume>0]
                     start_date = df.index[0]
                     end_date = df.index[-1]
-                    # df = pd.DataFrame()
                     df = df.reindex(trading_days[(trading_days>=start_date)])
                     df.Volume = df.Volume.fillna(0)
                     df = df.ffill()
@@ -165,7 +164,7 @@ def hs300_equities(symbols=None, start=None, end=None):
                 try:
                     df = cache[path]
                 except KeyError:
-                    data = request(
+                    data = cache[path] = request(
                         "123.56.77.52:10030",
                         "Divid",
                         {"symbol": symbol}

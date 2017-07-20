@@ -152,7 +152,7 @@ def load_market_data(trading_day=None, trading_days=None, bm_symbol='^GSPC'):
 
     # We'll attempt to download new data if the latest entry in our cache is
     # before this date.
-    last_date = trading_days[trading_days.get_loc(now, method='ffill') - 1]
+    last_date = trading_days[trading_days.get_loc(now, method='ffill')]
 
     br = ensure_benchmark_data(
         bm_symbol,
@@ -301,7 +301,7 @@ def _load_cached_data(filename, first_date, last_date, now, resource_name):
             # Don't re-download if we've successfully downloaded and written a
             # file in the last hour.
             last_download_time = last_modified_time(path)
-            if (now - last_download_time) <= ONE_HOUR:
+            if (now - last_download_time) <= 12*ONE_HOUR:
                 logger.warn(
                     "Refusing to download new {resource} data because a "
                     "download succeeded at {time}.",

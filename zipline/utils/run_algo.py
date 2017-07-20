@@ -143,6 +143,8 @@ def _run(handle_data,
             equity_minute_reader=bundle_data.equity_minute_bar_reader,
             equity_daily_reader=bundle_data.equity_daily_bar_reader,
             adjustment_reader=bundle_data.adjustment_reader,
+            minute_history_prefetch_length=1,
+            daily_history_prefetch_length=1,
         )
 
         pipeline_loader = USEquityPricingLoader(
@@ -181,11 +183,12 @@ def _run(handle_data,
         }
     ).run(
         data,
-        overwrite_sim_params=False,
+        overwrite_sim_params=True,
     )
 
     if output == '-':
-        click.echo(str(perf))
+        print
+        # click.echo(str(perf))
     elif output != os.devnull:  # make the zipline magic not write any data
         perf.to_pickle(output)
 

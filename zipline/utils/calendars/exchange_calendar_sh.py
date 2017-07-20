@@ -61,6 +61,10 @@ class SHExchangeCalendar(TradingCalendar):
         return time(9, 31)
 
     @property
+    def before_trading_start_minutes(self):
+        return time(9, 0)
+
+    @property
     def close_time(self):
         return time(15, 0)
 

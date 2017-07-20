@@ -1083,8 +1083,10 @@ class BcolzMinuteBarReader(MinuteBarReader):
                     "e": _dt_next.strftime("%Y%m%d")
                 },
             )
-            df = pd.DataFrame(d).set_index(['date'])
-            df.index = pd.to_datetime(df.index - 28800, unit="s")
+
+            df = pd.DataFrame(d)
+            df.index = pd.to_datetime(df.index, utc=True) - pd.Timedelta(
+                hours=8)
             for col in df.columns:
                 if col == "amount":
                     continue
@@ -1158,7 +1160,7 @@ class BcolzMinuteBarReader(MinuteBarReader):
         try:
             value = self._load_minute_file(field, sid, dt).loc[dt]
         except IndexError:
-            value = 0
+            value = np.nan
         if value == 0:
             if field == 'volume':
                 return 0
@@ -1299,7 +1301,7 @@ class BcolzMinuteBarReader(MinuteBarReader):
             )
             df = pd.DataFrame(d).set_index(['date'])
             df.index = pd.to_datetime(df.index - 28800, unit="s")
-            _dict[sid] =df
+            _dict[sid] =df.loc[(df.index>=start_dt) & (df.index<=end_dt)]
         panel = pd.Panel(_dict)
         indexs = panel.major_axis
 

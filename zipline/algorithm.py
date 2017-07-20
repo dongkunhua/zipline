@@ -21,7 +21,7 @@ except ImportError:
 from copy import copy
 import operator as op
 import warnings
-from datetime import tzinfo, time
+from datetime import tzinfo
 import logbook
 import pytz
 import pandas as pd
@@ -137,7 +137,6 @@ from zipline.utils.security_list import SecurityList
 import zipline.protocol
 from zipline.sources.requests_csv import PandasRequestsCSV
 
-from zipline.gens.sim_engine import MinuteSimulationClock
 from zipline.sources.benchmark_source import BenchmarkSource
 from zipline.zipline_warnings import ZiplineDeprecationWarning
 
@@ -532,18 +531,45 @@ class TradingAlgorithm(object):
         # FIXME generalize these values
         before_trading_start_minutes = days_at_time(
             self.sim_params.sessions,
-            time(8, 45),
+            self.trading_calendar.before_trading_start_minutes,
             self.trading_environment.exchange_tz
         )
+        from zipline.anyc import  asynRPCClient
+        import pandas as pd
 
-        return MinuteSimulationClock(
-            self.sim_params.sessions,
-            execution_opens,
-            execution_closes,
-            before_trading_start_minutes,
-            minute_emission=minutely_emission,
-            data_frequency = self.data_frequency,
+        server_ip = "127.0.0.1:9001"
+        rpc_client = asynRPCClient(
+            host="127.0.0.1",
+            port=9001,
         )
+
+        def cb(*args, **kargs):
+            d = args[1]["params"][-1]
+            d = pd.Timestamp(d, tz=pytz.timezone("Asia/Shanghai")).astimezone(
+                "UTC")
+            return d
+
+        import functools
+
+
+        class anycClock(object):
+            # no doc
+            def _get_minutes_for_list(self, *args,
+                                      **kwargs):  # real signature unknown
+                return []
+
+            def __iter__(self):  # real signature unknown; restored from __doc__
+                """ x.__iter__() <==> iter(x) """
+                rpc_client.subscribe(
+                    "get", {"symbol": "000001.SH"},
+                    functools.partial(cb, "000001.SH")
+                )
+                for _dt in rpc_client.recvPackages():
+                    yield _dt, 0
+
+            __pyx_vtable__ = None  # (!) real value is ''
+        return anycClock()
+
 
     def _create_benchmark_source(self):
         return BenchmarkSource(
@@ -575,7 +601,8 @@ class TradingAlgorithm(object):
             self.initialize(*self.initialize_args, **self.initialize_kwargs)
             self.initialized = True
 
-        self.trading_client = AlgorithmSimulator(
+        self.trading_client = \
+            AlgorithmSimulator(
             self,
             sim_params,
             self.data_portal,
